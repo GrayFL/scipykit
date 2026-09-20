@@ -32,9 +32,9 @@ def pkl_load(file_path: str):
         return pickle.load(f)
 
 
-def json_save(obj, file_path: str):
+def json_save(obj, file_path: str, **kwds):
     with open(file_path, 'w') as f:
-        json.dump(obj, f)
+        json.dump(obj, f, ensure_ascii=False, **kwds)
 
 
 def json_load(file_path: str):

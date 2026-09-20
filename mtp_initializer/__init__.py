@@ -21,7 +21,7 @@
 | 八号     | 5                 |
 """
 
-# import os
+import os
 from matplotlib.cm import get_cmap as mtp_get_cmap
 import matplotlib as mtp
 import matplotlib.pyplot as plt
@@ -29,9 +29,10 @@ from matplotlib.axes import Axes
 from matplotlib.projections.polar import PolarAxes
 from mpl_toolkits.mplot3d.axes3d import Axes3D
 from matplotlib.gridspec import GridSpec
-from IPython.display import display as disp, clear_output as clr
+from IPython.display import display, display_markdown, clear_output as clr, Image as IPyImage
+from IPython.core.formatters import format_display_data
 # plt.rcParams['font.family'] = 'Times New Roman,Simsun'
-plt.rcParams['font.family'] = 'Sarasa Mono SC'
+plt.rcParams['font.family'] = 'Inconsolata, Sarasa Mono SC'
 plt.rcParams['font.size'] = 10.5  # 10.5pt 五号字；9pt 小五号字
 plt.rcParams['mathtext.fontset'] = 'stix'
 plt.rcParams['figure.subplot.left'] = 0.11  #0.05
@@ -46,6 +47,15 @@ plt.rcParams['legend.fontsize'] = 'medium'
 plt.rcParams['interactive'] = 'False'
 # plt.rcParams['color_cycle'] = ['b','g','r','c','m','y','k']
 import numpy as np
+from pathlib import Path
+
+from .anotator import (
+    text_better,
+    find_annotate_position,
+    find_annotate_positions,
+    select_artists,
+    clear_mono_metric_cache,
+    )
 
 # import matplotlib.backends.backend_agg
 import matplotlib_inline.backend_inline
@@ -62,13 +72,14 @@ matplotlib_inline.backend_inline.set_matplotlib_formats(
         },
     )
 
-plt.plot()
+plt.plot(0, 0)
 plt.ioff()
 plt.close()
 
 from typing import Literal
 
 # os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['NOTEBOOK_ASSETS_ROOT'] = 'assets'
 
 
 def get_cmap(name: Literal['Accent', 'Blues', 'BrBG', 'BuGn', 'BuPu', 'CMRmap', 'Dark2', 'GnBu', 'Greens', 'Greys', 'OrRd', 'Oranges', 'PRGn', 'Paired', 'Pastel1', 'Pastel2', 'PiYG', 'PuBu', 'PuBuGn', 'PuOr', 'PuRd', 'Purples', 'RdBu', 'RdGy', 'RdPu', 'RdYlBu', 'RdYlGn', 'Reds', 'Set1', 'Set2', 'Set3', 'Spectral', 'Wistia', 'YlGn', 'YlGnBu', 'YlOrBr', 'YlOrRd', 'afmhot', 'autumn', 'binary', 'bone', 'brg', 'bwr', 'cividis', 'cool', 'coolwarm', 'copper', 'cubehelix', 'flag', 'gist_earth', 'gist_gray', 'gist_heat', 'gist_ncar', 'gist_stern', 'gist_yarg', 'gnuplot', 'gnuplot2', 'gray', 'hot', 'hsv', 'inferno', 'jet', 'magma', 'nipy_spectral', 'ocean', 'pink', 'plasma', 'prism', 'rainbow', 'seismic', 'spring', 'summer', 'tab10', 'tab20', 'tab20b', 'tab20c', 'terrain', 'twilight', 'twilight_shifted', 'viridis', 'winter'], **kwds): #yapf: disable
@@ -109,12 +120,200 @@ def mfigure(
     return fig
 
 
+def disp(
+        obj,
+        key=None,
+        df_formats=('parquet', ),
+        df_render_html=False,
+        df_link_html=True,
+        **kwds
+    ):
+    if isinstance(obj, plt.Figure):
+        if key is not None:
+            root = Path(os.environ["NOTEBOOK_ASSETS_ROOT"])
+            p = root / inspect_notebook_name() / f"{key}.png"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            obj.savefig(p)
+            v = p.stat().st_mtime_ns
+            IMAGE_MIME = "application/vnd.notebook-assets.image+json"
+            # display(IPyImage(url=f"{p}?mtime={v}"), **kwds)
+            display({
+                IMAGE_MIME: {
+                    "kind": "image", "image": str(p)
+                    },
+                "text/plain": f"{p}"
+                },
+                    raw=True)
+            # print(p)
+            return
+        display(obj, **kwds)
+        return
+
+    import pandas as pd
+    if isinstance(obj, (pd.DataFrame, pd.Series)):
+        frame = (obj.to_frame() if isinstance(obj, pd.Series) else obj)
+
+        # 给 notebook / coding agent 使用的紧凑文本表示。
+        with pd.option_context(
+                "display.expand_frame_repr",
+                False,
+            ):
+            plain_text = repr(frame)
+
+        output_data = {
+            "text/plain": plain_text,
+            }
+        # ------------------------------------------------------------
+        # 无 key：
+        #   默认完全不产生 HTML，只保留 text/plain。
+        #
+        #   df_render_html=True 时才恢复传统 notebook HTML rendering，
+        #   此时 HTML 本身会进入 ipynb。
+        # ------------------------------------------------------------
+        if key is None:
+            if df_render_html:
+                data, _ = format_display_data(
+                    obj,
+                    include=["text/html"],
+                )
+                html = data.get("text/html")
+
+                if html is None:
+                    html_obj = (
+                        obj.to_frame()
+                        if isinstance(obj, pd.Series) else obj
+                        )
+                    html = html_obj.to_html(
+                        max_rows=pd.get_option("display.max_rows"),
+                        max_cols=1e2,  # pd.get_option("display.max_columns")
+                        show_dimensions=True,
+                        )
+
+                output_data["text/html"] = html
+
+            display(
+                output_data,
+                raw=True,
+                **kwds,
+                )
+            return
+        # ------------------------------------------------------------
+        # 有 key：本地化 dataframe。
+        # ------------------------------------------------------------
+        root = Path(os.environ["NOTEBOOK_ASSETS_ROOT"])
+        asset_dir = root / inspect_notebook_name()
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        data_paths = {}
+        for fmt in df_formats:
+            p = asset_dir / f"{key}.{fmt}"
+            if fmt == "parquet":
+                frame.to_parquet(p)
+            elif fmt == "csv":
+                frame.to_csv(
+                    p,
+                    header=True,
+                    )
+            elif fmt == "xlsx":
+                frame.to_excel(
+                    p,
+                    header=True,
+                    index=False,
+                    )
+            else:
+                raise ValueError(f"Unsupported dataframe format: {fmt!r}")
+            data_paths[fmt] = p
+        DF_MIME = ("application/vnd.notebook-assets.dataframe+json")
+        descriptor = {
+            "kind":
+                ("series" if isinstance(obj, pd.Series) else "dataframe"),
+            "shape": str(' x '.join(map(str, frame.shape))),
+            # "data": {
+            #     fmt: str(p)
+            #     for fmt, p in data_paths.items()
+            #     },
+            }
+        # ------------------------------------------------------------
+        # 外部 HTML：
+        #
+        # df_link_html=True:
+        #   保存完整 HTML 到 assets。
+        #
+        # notebook 中的 text/html 只保存一个非常小的 link shell，
+        # 不保存 dataframe 的 HTML 内容。
+        #
+        # 注意：
+        #   key 存在时，df_render_html 不会把 dataframe HTML 注入
+        #   notebook；外部 HTML 完全由 df_link_html 控制。
+        # ------------------------------------------------------------
+        if df_link_html:
+            html_path = asset_dir / f"{key}.html"
+            data, _ = format_display_data(
+                obj,
+                include=["text/html"],
+            )
+            html = data.get("text/html")
+            if html is None:
+                html_obj = (
+                    obj.to_frame() if isinstance(obj, pd.Series) else obj
+                    )
+                html = html_obj.to_html(
+                    max_rows=pd.get_option("display.max_rows"),
+                    max_cols=pd.get_option("display.max_columns"),
+                    show_dimensions=True,
+                    )
+            html = ("<!doctype html>\n"
+                    '<meta charset="utf-8">\n' + html)
+            html_path.write_text(
+                html,
+                encoding="utf-8",
+                )
+            descriptor["html"] = str(html_path)
+            descriptor["mtime_ns"] = (html_path.stat().st_mtime_ns)
+            # 这里注入 notebook 的不是 dataframe HTML，
+            # 只是一小段链接 UI。
+            import html as _html
+            html_href = _html.escape(
+                html_path.as_posix(),
+                quote=True,
+                )
+            output_data[DF_MIME] = (descriptor)
+        # ------------------------------------------------------------
+        # 外部数据文件 presentation。
+        #
+        # VS Code 没有原生 Parquet notebook renderer，
+        # 所以这里用 text/markdown 做一个可切换的文件 presentation。
+        # 文件本身仍然完全在 ipynb 外部。
+        # ------------------------------------------------------------
+        if data_paths:
+            markdown = [
+                "**Localized dataframe files**",
+                "",
+                ]
+            for fmt, p in data_paths.items():
+                path = p.as_posix()
+                markdown.append(f"- **{fmt}**: "
+                                f"[`{p.name}`]({path})")
+            output_data["text/markdown"] = "\n".join(markdown)
+        # metadata = {
+        #     "notebook-assets": descriptor,
+        #     }
+        display(
+            output_data,
+            raw=True,
+            # metadata=metadata,
+            **kwds,
+            )
+        return
+    display(obj, **kwds)
+
+
 def show_image(
         img,
         scale=1.0,
         size_factor=120,
         is_output=False,
         is_to_RGB=False,
+        key=None,
         **kwds
     ):
     '''
@@ -136,7 +335,7 @@ def show_image(
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis('off')
     ax.imshow(img, **kwds)
-    disp(fig)
+    disp(fig, key=key)
     if is_output:
         fig.canvas.draw()
         frame = fig.canvas.buffer_rgba()
@@ -212,3 +411,26 @@ def scale_pt2data(ax: Axes, pt: float):
     dpi = ax.figure.dpi
     size_in_data_xyz = pt * (dpi/72) * d_axis
     return size_in_data_xyz
+
+
+def inspect_notebook_name():
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+        if ip is not None:
+            ns = ip.user_ns
+            if "__vsc_ipynb_file__" in ns:
+                return Path(ns["__vsc_ipynb_file__"]
+                           ).expanduser().resolve().name
+    except Exception:
+        pass
+
+    if "__vsc_ipynb_file__" in globals():
+        return Path(globals()["__vsc_ipynb_file__"]
+                   ).expanduser().resolve().name
+
+    if '__notebook_filename__' in os.environ:
+        return os.environ['__notebook_filename__']
+
+    print('[Scipykit] Not run in vscode notebook')
+    return 'notebook'
