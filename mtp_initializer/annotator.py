@@ -351,8 +351,10 @@ def _text_size_fast_px(
     descent = metric.descent_px * scale
     line_height = ascent + descent
 
-    # Matplotlib Text currently stores this as a private attribute.
-    linespacing = float(getattr(text_artist, "_linespacing", 1.2))
+    # Matplotlib 3.11 exposes get_linespacing() and defaults to 'normal'.
+    spacing = (text_artist.get_linespacing() if hasattr(text_artist, 'get_linespacing')
+               else getattr(text_artist, '_linespacing', 1.2))
+    linespacing = 1.2 if spacing == 'normal' else float(spacing)
     n_lines = max(1, len(lines))
 
     if n_lines == 1:
@@ -1698,6 +1700,11 @@ def text_artist_uses_complex_layout(
     TeX/MathText or strongly shape-changing bbox styles.
     """
     text = str(text_artist.get_text())
+
+    # 3.11 multiline spacing follows per-line font metrics. Use the native
+    # renderer here instead of approximating the new layout semantics.
+    if '\n' in text and hasattr(text_artist, 'get_linespacing'):
+        return True
 
     if bool(text_artist.get_usetex()):
         return True
